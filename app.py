@@ -1,95 +1,56 @@
-import streamlit as st
-import pandas as pd
-import requests
-import time
-import json
-import os
+import streamlit as st, pandas as pd, requests, time, json, os
 import plotly.graph_objects as go
-from datetime import datetime, timezone, timedelta
 
 st.set_page_config(layout="wide")
-IST = timezone(timedelta(hours=5, minutes=30))
-FN = "pro_state.json"
+FN = "bot_state.json"
+S = json.load(open(FN)) if os.path.exists(FN) else {"bal": 20000.0, "pos": {}, "log": []}
 
-if os.path.exists(FN):
-    with open(FN, "r") as f:
-        state = json.load(f)
-else:
-    state = {
-        "bal": 20000.0,
-        "pos": {},
-        "log": []
-    }
-
-@st.cache_data(ttl=60)
-def get_coins():
-    try:
-        u = "https://api.india.delta.exchange/v2/tickers"
-        r = requests.get(u, timeout=8).json()
-        res = r.get("result", [])
-        rows = []
-        for x in res:
-            ct = x.get("contract_type", "")
-            sym = str(x.get("symbol", ""))
-            cp = float(x.get("close") or 0)
-            tv = float(x.get("turnover") or 0)
-            if ct == "perpetual_futures":
-                if sym.endswith("USD") and cp > 0:
-                    rows.append({"s": sym, "v": tv})
-        df_c = pd.DataFrame(rows)
-        df_c = df_c.sort_values("v", ascending=False)
-        return df_c["s"].tolist()
-    except Exception:
-        return [
-            "BTCUSD", "ETHUSD", "SOLUSD",
-            "XRPUSD", "DOGEUSD", "BNBUSD",
-            "SUIUSD", "ADAUSD", "AVAXUSD"
-        ]
-
-coins = get_coins()
-
-st.sidebar.header("Pro Crypto Settings")
-tf = st.sidebar.selectbox(
-    "Timeframe", ["15m", "5m", "1h"], index=0
-)
+COINS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD", "BNBUSD", "SUIUSD", "ADAUSD"]
 lev = st.sidebar.slider("Leverage (x)", 1, 10, 5)
-margin = st.sidebar.number_input(
-    "Margin / Trade (Rs)", value=5000, step=1000
-)
-chart_sym = st.sidebar.selectbox(
-    "Inspect Coin Chart", coins, index=0
-)
-f_long = st.sidebar.button("Force LONG")
-f_short = st.sidebar.button("Force SHORT")
-reset_btn = st.sidebar.button("Reset Rs 20,000")
+csym = st.sidebar.selectbox("Chart Coin", COINS)
+flong = st.sidebar.button("Force LONG")
+fshort = st.sidebar.button("Force SHORT")
 
-if reset_btn:
-    if os.path.exists(FN):
-        os.remove(FN)
-    st.rerun()
-
-now_str = datetime.now(IST).strftime("%H:%M:%S IST")
-fee_inr = margin * lev * 0.001 * 1.18
-radar = []
-chart_df = None
-
-for sym in coins[:12]:
+radar, cdf = [], None
+for s in COINS:
     try:
-        sec = 900
-        if tf == "5m":
-            sec = 300
-        if tf == "1h":
-            sec = 3600
-        end_t = int(time.time())
-        start_t = end_t - (75 * sec)
-        b_url = "https://api.india.delta.exchange"
-        path = "/v2/history/candles"
-        q = f"?resolution={tf}&symbol={sym}"
-        q2 = f"&start={start_t}&end={end_t}"
-        u = b_url + path + q + q2
-        r = requests.get(u, timeout=5).json()
-        res = r.get("result", [])
-        if len(res) < 52:
-            continue
-        df = pd.DataFrame(res)
-        df = df.
+        t2 = int(time.time())
+        t1 = t2 - 60000
+        u = "https://api.india.delta.exchange/v2/history/candles?resolution=15m&symbol=" + s + f"&start={t1}&end={t2}"
+        df = pd.DataFrame(requests.get(u, timeout=5).json()["result"]).sort_values("time")
+        df["e20"] = df["close"].ewm(span=20).mean()
+        df["e50"] = df["close"].ewm(span=50).mean()
+        if s == csym: cdf = df
+        lp = float(df["close"].iloc[-1])
+        e20, e50 = float(df["e20"].iloc[-2]), float(df["e50"].iloc[-2])
+        lo, hi = float(df["low"].iloc[-2]), float(df["high"].iloc[-2])
+        up = e20 > e50
+        if s in S["pos"]:
+            p = S["pos"][s]
+            rm = (lp - p["ep"]) / p["ep"] if p["side"] == "LONG" else (p["ep"] - lp) / p["ep"]
+            if rm >= 0.025 or rm <= -0.012:
+                pnl = round(5000 * rm * lev - 29, 1)
+                S["bal"] += pnl
+                S["log"].insert(0, {"Coin": s, "Side": p["side"], "Entry": p["ep"], "Exit": lp, "PnL_Rs": pnl})
+                del S["pos"][s]
+        elif len(S["pos"]) < 4:
+            if up and lo <= e20 * 1.003 and lp > e20: S["pos"][s] = {"side": "LONG", "ep": lp}
+            elif not up and hi >= e20 * 0.997 and lp < e20: S["pos"][s] = {"side": "SHORT", "ep": lp}
+        radar.append({"Coin": s, "Price": lp, "Trend": "UP" if up else "DOWN", "Trade": S["pos"].get(s, {}).get("side", "Scanning")})
+    except Exception: pass
+
+if cdf is not None and (flong or fshort):
+    S["pos"][csym] = {"side": "LONG" if flong else "SHORT", "ep": float(cdf["close"].iloc[-1])}
+json.dump(S, open(FN, "w"))
+
+st.title(f"Delta India Pro Crypto Bot (Rs {S['bal']:,.0f})")
+c1, c2 = st.columns(2)
+c1.subheader("Live Multi-Coin Radar & Active Trades")
+c1.dataframe(pd.DataFrame(radar), use_container_width=True)
+if S["log"]: c1.dataframe(pd.DataFrame(S["log"]), use_container_width=True)
+if cdf is not None:
+    fig = go.Figure(go.Candlestick(open=cdf["open"], high=cdf["high"], low=cdf["low"], close=cdf["close"]))
+    fig.update_layout(height=400, xaxis_rangeslider_visible=False, template="plotly_dark")
+    c2.plotly_chart(fig, use_container_width=True)
+time.sleep(25)
+st.rerun()
