@@ -7,12 +7,11 @@ import os
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Delta India Pro Crypto Algo Bot", layout="wide")
+st.set_page_config(page_title="Delta India Pro Crypto Bot", layout="wide")
 
 IST = timezone(timedelta(hours=5, minutes=30))
 STATE_FILE = "pro_crypto_state_inr.json"
 
-# --- 1. PERSISTENT CLOUD MEMORY ---
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -34,7 +33,6 @@ def save_state(state):
 
 state = load_state()
 
-# --- 2. FETCH ALL INSTRUMENTS FROM DELTA EXCHANGE INDIA ---
 @st.cache_data(ttl=60)
 def fetch_all_delta_tickers():
     try:
@@ -49,8 +47,9 @@ def fetch_all_delta_tickers():
             vol_usd = float(item.get("turnover") or item.get("volume") or 0)
             if close_p > 0 and ctype == "perpetual_futures" and sym.endswith("USD"):
                 perps.append({"symbol": sym, "price": close_p, "turnover": vol_usd})
-        perps_df = pd.DataFrame(perps).sort_values("turnover", ascending=False).reset_index(drop=True)
-        return perps_df
+        df_p = pd.DataFrame(perps)
+        df_p = df_p.sort_values("turnover", ascending=False).reset_index(drop=True)
+        return df_p
     except Exception:
         return pd.DataFrame([
             {"symbol": "BTCUSD", "price": 65000.0, "turnover": 1000000},
@@ -61,22 +60,24 @@ def fetch_all_delta_tickers():
         ])
 
 perps_df = fetch_all_delta_tickers()
-all_perp_symbols = perps_df["symbol"].tolist() if not perps_df.empty else ["BTCUSD", "ETHUSD", "SOLUSD"]
+if not perps_df.empty:
+    all_perp_symbols = perps_df["symbol"].tolist()
+else:
+    all_perp_symbols = ["BTCUSD", "ETHUSD", "SOLUSD"]
 
-# --- 3. SIDEBAR CONTROLS (PRO CRYPTO SETTINGS) ---
 st.sidebar.header("Pro Crypto Strategy Settings")
-scan_count = st.sidebar.slider("Auto-Scan Top N Liquid Coins", 5, 25, 15)
-max_slots = st.sidebar.slider("Max Simultaneous Open Trades", 1, 5, 4)
+scan_count = st.sidebar.slider("Auto-Scan Top N Coins", 5, 25, 15)
+max_slots = st.sidebar.slider("Max Simultaneous Trades", 1, 5, 4)
 margin_per_trade = st.sidebar.number_input("Margin Per Trade (Rs)", value=5000, step=1000)
 timeframe = st.sidebar.selectbox("Strategy Timeframe", ["15m", "1h", "5m"], index=0)
 leverage = st.sidebar.slider("Safe Crypto Leverage (x)", 1, 10, 5)
-atr_sl_mult = st.sidebar.slider("ATR Stop-Loss Multiplier", 1.0, 3.0, 1.5, 0.1)
-atr_tp_mult = st.sidebar.slider("ATR Target Multiplier (2:1 R:R)", 2.0, 6.0, 3.0, 0.2)
-fee_rate = 0.0005  # 0.05% per order (~Rs 29 round-trip with GST at 5x)
+atr_sl_mult = st.sidebar.slider("ATR Stop Multiplier", 1.0, 3.0, 1.5, 0.1)
+atr_tp_mult = st.sidebar.slider("ATR Target Multiplier", 2.0, 6.0, 3.0, 0.2)
+fee_rate = 0.0005
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Chart & Manual Test Inspector")
-selected_chart_sym = st.sidebar.selectbox("Inspect Any Crypto Contract", all_perp_symbols, index=0)
+st.sidebar.subheader("Chart & Manual Test")
+selected_chart_sym = st.sidebar.selectbox("Inspect Crypto Contract", all_perp_symbols, index=0)
 c_b1, c_b2 = st.sidebar.columns(2)
 force_long = c_b1.button("Force LONG")
 force_short = c_b2.button("Force SHORT")
@@ -86,32 +87,28 @@ if reset_bot and os.path.exists(STATE_FILE):
     os.remove(STATE_FILE)
     st.rerun()
 
-# --- 4. FETCH CANDLES & CALCULATE EMA + RSI + ATR ---
 def fetch_candles_and_indicators(sym, tf):
     tf_map = {"5m": 300, "15m": 900, "1h": 3600}
     tf_sec = tf_map.get(tf, 900)
     end_ts = int(time.time())
     start_ts = end_ts - (90 * tf_sec)
-    url = f"https://api.india.delta.exchange/v2/history/candles?resolution={tf}&symbol={sym}&start={start_ts}&end={end_ts}"
+    base_url = "https://api.india.delta.exchange/v2/history/candles"
+    url = f"{base_url}?resolution={tf}&symbol={sym}&start={start_ts}&end={end_ts}"
     r = requests.get(url, timeout=6).json()
     res = r.get("result", [])
     if not res or len(res) < 55:
         return None
     df = pd.DataFrame(res).sort_values("time").reset_index(drop=True)
     df["dt"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.tz_convert(IST)
-
-    # Trend EMAs (20 Fast Pullback Zone & 50 Macro Trend)
     df["EMA20"] = df["close"].ewm(span=20, adjust=False).mean()
     df["EMA50"] = df["close"].ewm(span=50, adjust=False).mean()
 
-    # 14-Period RSI
     delta = df["close"].diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
     rs = gain / loss.replace(0, 1e-9)
     df["RSI"] = 100.0 - (100.0 / (1.0 + rs))
 
-    # 14-Period ATR (Dynamic Volatility Stop & Target Sizing)
     high_low = df["high"] - df["low"]
     high_close = (df["high"] - df["close"].shift()).abs()
     low_close = (df["low"] - df["close"].shift()).abs()
@@ -130,9 +127,8 @@ if selected_chart_sym not in scan_symbols:
 
 scanner_rows = []
 chart_df = None
-round_trip_fee_inr = margin_per_trade * leverage * (2 * fee_rate) * 1.18
+round_trip_fee_inr = margin_per_trade * leverage * 2.0 * fee_rate * 1.18
 
-# --- 5. PRO CRYPTO TREND + PULLBACK ENGINE ---
 for sym in scan_symbols:
     try:
         df = fetch_candles_and_indicators(sym, timeframe)
@@ -141,61 +137,4 @@ for sym in scan_symbols:
         if sym == selected_chart_sym:
             chart_df = df
 
-        live_p = float(df["close"].iloc[-1])
-        last_c = df.iloc[-2]
-        c_close = float(last_c["close"])
-        c_high  = float(last_c["high"])
-        c_low   = float(last_c["low"])
-        c_ema20 = float(last_c["EMA20"])
-        c_ema50 = float(last_c["EMA50"])
-        c_rsi   = float(last_c["RSI"])
-        c_atr   = float(last_c["ATR"]) if float(last_c["ATR"]) > 0 else (live_p * 0.01)
-
-        long_pullback = (c_ema20 > c_ema50) and (c_low <= c_ema20 * 1.004) and (c_close > c_ema20) and (42 <= c_rsi <= 65)
-        short_pullback = (c_ema20 < c_ema50) and (c_high >= c_ema20 * 0.996) and (c_close < c_ema20) and (35 <= c_rsi <= 58)
-
-        signal_status = "Scanning Trend"
-        if long_pullback:
-            signal_status = "BUY PULLBACK"
-        elif short_pullback:
-            signal_status = "SELL PULLBACK"
-
-        # A. Manage Open Position
-        if sym in state["open_positions"]:
-            pos_info = state["open_positions"][sym]
-            side = pos_info["side"]
-            ep   = pos_info["entry_price"]
-            tp   = pos_info["tp_price"]
-            sl   = pos_info["sl_price"]
-            halfway_target = ep + ((tp - ep) * 0.5)
-
-            if side == "LONG" and live_p >= halfway_target and sl < ep:
-                pos_info["sl_price"] = ep * 1.001
-                sl = pos_info["sl_price"]
-                pos_info["trailed"] = True
-            elif side == "SHORT" and live_p <= halfway_target and sl > ep:
-                pos_info["sl_price"] = ep * 0.999
-                sl = pos_info["sl_price"]
-                pos_info["trailed"] = True
-
-            exit_reason = None
-            exit_p = live_p
-
-            if side == "LONG":
-                if live_p <= sl or c_low <= sl:
-                    exit_reason = "TRAILED BREAKEVEN" if pos_info.get("trailed") else "STOP-LOSS HIT"
-                    exit_p = sl
-                    raw_move = (exit_p - ep) / ep
-                elif live_p >= tp or c_high >= tp:
-                    exit_reason, exit_p, raw_move = "TARGET HIT", tp, (tp - ep) / ep
-            else:
-                if live_p >= sl or c_high >= sl:
-                    exit_reason = "TRAILED BREAKEVEN" if pos_info.get("trailed") else "STOP-LOSS HIT"
-                    exit_p = sl
-                    raw_move = (ep - exit_p) / ep
-                elif live_p <= tp or c_low <= tp:
-                    exit_reason, exit_p, raw_move = "TARGET HIT", tp, (ep - tp) / ep
-
-            if exit_reason:
-                gross_roi = raw_move * leverage
-                pnl_inr = (margin_per_trade
+        live_p
