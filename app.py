@@ -1,140 +1,80 @@
-import streamlit as st
-import pandas as pd
-import requests
-import time
-import json
-import os
+import streamlit as st, pandas as pd, requests, time, json, os, plotly.graph_objects as go
 from datetime import datetime, timezone, timedelta
-import plotly.graph_objects as go
 
 st.set_page_config(page_title="Delta India Pro Crypto Bot", layout="wide")
-
 IST = timezone(timedelta(hours=5, minutes=30))
-STATE_FILE = "pro_crypto_state_inr.json"
+FN = "pro_state.json"
 
-def load_state():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r") as f:
-                data = json.load(f)
-                if "open_positions" in data:
-                    return data
-        except Exception:
-            pass
-    return {
-        "balance_inr": 20000.0,
-        "open_positions": {},
-        "trade_log": []
-    }
-
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
-
-state = load_state()
+state = json.load(open(FN)) if os.path.exists(FN) else {"bal": 20000.0, "pos": {}, "log": []}
 
 @st.cache_data(ttl=60)
-def fetch_all_delta_tickers():
+def get_coins():
     try:
-        url = "https://api.india.delta.exchange/v2/tickers"
-        r = requests.get(url, timeout=10).json()
-        rows = r.get("result", [])
-        perps = []
-        for item in rows:
-            sym = item.get("symbol", "")
-            ctype = item.get("contract_type", "")
-            close_p = float(item.get("close") or item.get("mark_price") or 0)
-            vol_usd = float(item.get("turnover") or item.get("volume") or 0)
-            if close_p > 0 and ctype == "perpetual_futures" and sym.endswith("USD"):
-                perps.append({"symbol": sym, "price": close_p, "turnover": vol_usd})
-        df_p = pd.DataFrame(perps)
-        df_p = df_p.sort_values("turnover", ascending=False).reset_index(drop=True)
-        return df_p
+        r = requests.get("https://api.india.delta.exchange/v2/tickers", timeout=8).json().get("result", [])
+        rows = [{"s": x["symbol"], "p": float(x.get("close") or 0), "v": float(x.get("turnover") or 0)} for x in r if x.get("contract_type") == "perpetual_futures" and str(x.get("symbol")).endswith("USD") and float(x.get("close") or 0) > 0]
+        return pd.DataFrame(rows).sort_values("v", ascending=False)["s"].tolist()
     except Exception:
-        return pd.DataFrame([
-            {"symbol": "BTCUSD", "price": 65000.0, "turnover": 1000000},
-            {"symbol": "ETHUSD", "price": 3500.0, "turnover": 800000},
-            {"symbol": "SOLUSD", "price": 150.0, "turnover": 600000},
-            {"symbol": "XRPUSD", "price": 0.60, "turnover": 500000},
-            {"symbol": "DOGEUSD", "price": 0.15, "turnover": 400000}
-        ])
+        return ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD", "BNBUSD", "SUIUSD", "ADAUSD"]
 
-perps_df = fetch_all_delta_tickers()
-if not perps_df.empty:
-    all_perp_symbols = perps_df["symbol"].tolist()
-else:
-    all_perp_symbols = ["BTCUSD", "ETHUSD", "SOLUSD"]
-
-st.sidebar.header("Pro Crypto Strategy Settings")
-scan_count = st.sidebar.slider("Auto-Scan Top N Coins", 5, 25, 15)
-max_slots = st.sidebar.slider("Max Simultaneous Trades", 1, 5, 4)
-margin_per_trade = st.sidebar.number_input("Margin Per Trade (Rs)", value=5000, step=1000)
-timeframe = st.sidebar.selectbox("Strategy Timeframe", ["15m", "1h", "5m"], index=0)
-leverage = st.sidebar.slider("Safe Crypto Leverage (x)", 1, 10, 5)
-atr_sl_mult = st.sidebar.slider("ATR Stop Multiplier", 1.0, 3.0, 1.5, 0.1)
-atr_tp_mult = st.sidebar.slider("ATR Target Multiplier", 2.0, 6.0, 3.0, 0.2)
-fee_rate = 0.0005
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Chart & Manual Test")
-selected_chart_sym = st.sidebar.selectbox("Inspect Crypto Contract", all_perp_symbols, index=0)
-c_b1, c_b2 = st.sidebar.columns(2)
-force_long = c_b1.button("Force LONG")
-force_short = c_b2.button("Force SHORT")
-reset_bot = st.sidebar.button("Reset Rs 20,000 Account")
-
-if reset_bot and os.path.exists(STATE_FILE):
-    os.remove(STATE_FILE)
+coins = get_coins()
+st.sidebar.header("Pro Crypto Settings")
+tf = st.sidebar.selectbox("Timeframe", ["15m", "5m", "1h"], index=0)
+lev = st.sidebar.slider("Leverage (x)", 1, 10, 5)
+margin = st.sidebar.number_input("Margin / Trade (Rs)", value=5000, step=1000)
+chart_sym = st.sidebar.selectbox("Inspect Coin Chart", coins, index=0)
+f_long = st.sidebar.button("Force LONG on Selected Coin")
+f_short = st.sidebar.button("Force SHORT on Selected Coin")
+if st.sidebar.button("Reset Rs 20,000"):
+    if os.path.exists(FN): os.remove(FN)
     st.rerun()
 
-def fetch_candles_and_indicators(sym, tf):
-    tf_map = {"5m": 300, "15m": 900, "1h": 3600}
-    tf_sec = tf_map.get(tf, 900)
-    end_ts = int(time.time())
-    start_ts = end_ts - (90 * tf_sec)
-    base_url = "https://api.india.delta.exchange/v2/history/candles"
-    url = f"{base_url}?resolution={tf}&symbol={sym}&start={start_ts}&end={end_ts}"
-    r = requests.get(url, timeout=6).json()
-    res = r.get("result", [])
-    if not res or len(res) < 55:
-        return None
-    df = pd.DataFrame(res).sort_values("time").reset_index(drop=True)
-    df["dt"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.tz_convert(IST)
-    df["EMA20"] = df["close"].ewm(span=20, adjust=False).mean()
-    df["EMA50"] = df["close"].ewm(span=50, adjust=False).mean()
-
-    delta = df["close"].diff()
-    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
-    rs = gain / loss.replace(0, 1e-9)
-    df["RSI"] = 100.0 - (100.0 / (1.0 + rs))
-
-    high_low = df["high"] - df["low"]
-    high_close = (df["high"] - df["close"].shift()).abs()
-    low_close = (df["low"] - df["close"].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df["ATR"] = tr.rolling(14).mean()
-    return df
-
-now_ist = datetime.now(IST).strftime("%d %b %H:%M:%S IST")
-
-scan_symbols = all_perp_symbols[:scan_count]
-for open_sym in list(state["open_positions"].keys()):
-    if open_sym not in scan_symbols:
-        scan_symbols.append(open_sym)
-if selected_chart_sym not in scan_symbols:
-    scan_symbols.append(selected_chart_sym)
-
-scanner_rows = []
+now_str = datetime.now(IST).strftime("%d %b %H:%M:%S IST")
+fee_inr = margin * lev * 0.001 * 1.18
+radar = []
 chart_df = None
-round_trip_fee_inr = margin_per_trade * leverage * 2.0 * fee_rate * 1.18
 
-for sym in scan_symbols:
+for sym in coins[:12]:
     try:
-        df = fetch_candles_and_indicators(sym, timeframe)
-        if df is None:
-            continue
-        if sym == selected_chart_sym:
-            chart_df = df
+        sec = 300 if tf == "5m" else (900 if tf == "15m" else 3600)
+        end_t = int(time.time())
+        u = f"https://api.india.delta.exchange/v2/history/candles?resolution={tf}&symbol={sym}&start={end_t - 75*sec}&end={end_t}"
+        res = requests.get(u, timeout=5).json().get("result", [])
+        if len(res) < 52: continue
+        df = pd.DataFrame(res).sort_values("time").reset_index(drop=True)
+        df["dt"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.tz_convert(IST)
+        df["e20"] = df["close"].ewm(span=20, adjust=False).mean()
+        df["e50"] = df["close"].ewm(span=50, adjust=False).mean()
+        df["atr"] = (df["high"] - df["low"]).rolling(14).mean()
+        if sym == chart_sym: chart_df = df
 
-        live_p
+        lp = float(df["close"].iloc[-1])
+        c = df.iloc[-2]
+        atr = float(c["atr"]) if float(c["atr"]) > 0 else lp * 0.015
+        up = float(c["e20"]) > float(c["e50"])
+        dip_buy = up and float(c["low"]) <= float(c["e20"]) * 1.003 and float(c["close"]) > float(c["e20"])
+        dip_sell = (not up) and float(c["high"]) >= float(c["e20"]) * 0.997 and float(c["close"]) < float(c["e20"])
+
+        if sym in state["pos"]:
+            p = state["pos"][sym]
+            ep, tp, sl, side = p["ep"], p["tp"], p["sl"], p["side"]
+            hit = None
+            if side == "LONG" and (lp >= tp or lp <= sl): hit = "TARGET" if lp >= tp else "STOP-LOSS"
+            if side == "SHORT" and (lp <= tp or lp >= sl): hit = "TARGET" if lp <= tp else "STOP-LOSS"
+            if hit:
+                rm = ((lp - ep) / ep) if side == "LONG" else ((ep - lp) / ep)
+                pnl = (margin * rm * lev) - fee_inr
+                state["bal"] += pnl
+                state["log"].insert(0, {"Time": now_str, "Coin": sym, "Side": side, "Entry": round(ep, 4), "Exit": round(lp, 4), "PnL (Rs)": round(pnl, 1), "Result": hit})
+                del state["pos"][sym]
+        elif len(state["pos"]) < 4:
+            if dip_buy: state["pos"][sym] = {"side": "LONG", "ep": lp, "tp": lp + 3*atr, "sl": lp - 1.5*atr, "t": now_str}
+            elif dip_sell: state["pos"][sym] = {"side": "SHORT", "ep": lp, "tp": lp - 3*atr, "sl": lp + 1.5*atr, "t": now_str}
+
+        radar.append({"Coin": sym, "Price": round(lp, 4), "Trend": "UPTREND" if up else "DOWNTREND", "ATR %": f"{(atr/lp)*100:.2f}%", "Status": "OPEN TRADE" if sym in state["pos"] else ("BUY SIGNAL" if dip_buy else ("SELL SIGNAL" if dip_sell else "Scanning"))})
+    except Exception:
+        continue
+
+if chart_df is not None and (f_long or f_short):
+    lp = float(chart_df["close"].iloc[-1])
+    atr = float(chart_df["atr"].iloc[-2]) if float(chart_df["atr"].iloc[-2]) > 0 else lp * 0.015
+    if f_long: state["pos"][chart_sym] = {"side": "LONG", "ep": lp, "tp": lp + 3*atr,
