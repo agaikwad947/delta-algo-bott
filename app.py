@@ -130,7 +130,7 @@ if selected_chart_sym not in scan_symbols:
 
 scanner_rows = []
 chart_df = None
-round_trip_fee_inr = margin_per_trade * leverage * (2 * fee_rate) * 1.18  # Includes 18% GST (~Rs 29.50 at 5x)
+round_trip_fee_inr = margin_per_trade * leverage * (2 * fee_rate) * 1.18
 
 # --- 5. PRO CRYPTO TREND + PULLBACK ENGINE ---
 for sym in scan_symbols:
@@ -151,13 +151,51 @@ for sym in scan_symbols:
         c_rsi   = float(last_c["RSI"])
         c_atr   = float(last_c["ATR"]) if float(last_c["ATR"]) > 0 else (live_p * 0.01)
 
-        # Pro Crypto Signal Rules:
-        # LONG: Uptrend (EMA20 > EMA50) + Pullback touches near EMA20 and bounces above + Healthy RSI (42 to 65)
         long_pullback = (c_ema20 > c_ema50) and (c_low <= c_ema20 * 1.004) and (c_close > c_ema20) and (42 <= c_rsi <= 65)
-        # SHORT: Downtrend (EMA20 < EMA50) + Bounce touches near EMA20 and rejects below + Bearish RSI (35 to 58)
         short_pullback = (c_ema20 < c_ema50) and (c_high >= c_ema20 * 0.996) and (c_close < c_ema20) and (35 <= c_rsi <= 58)
 
         signal_status = "Scanning Trend"
         if long_pullback:
             signal_status = "BUY PULLBACK"
         elif short_pullback:
+            signal_status = "SELL PULLBACK"
+
+        # A. Manage Open Position
+        if sym in state["open_positions"]:
+            pos_info = state["open_positions"][sym]
+            side = pos_info["side"]
+            ep   = pos_info["entry_price"]
+            tp   = pos_info["tp_price"]
+            sl   = pos_info["sl_price"]
+            halfway_target = ep + ((tp - ep) * 0.5)
+
+            if side == "LONG" and live_p >= halfway_target and sl < ep:
+                pos_info["sl_price"] = ep * 1.001
+                sl = pos_info["sl_price"]
+                pos_info["trailed"] = True
+            elif side == "SHORT" and live_p <= halfway_target and sl > ep:
+                pos_info["sl_price"] = ep * 0.999
+                sl = pos_info["sl_price"]
+                pos_info["trailed"] = True
+
+            exit_reason = None
+            exit_p = live_p
+
+            if side == "LONG":
+                if live_p <= sl or c_low <= sl:
+                    exit_reason = "TRAILED BREAKEVEN" if pos_info.get("trailed") else "STOP-LOSS HIT"
+                    exit_p = sl
+                    raw_move = (exit_p - ep) / ep
+                elif live_p >= tp or c_high >= tp:
+                    exit_reason, exit_p, raw_move = "TARGET HIT", tp, (tp - ep) / ep
+            else:
+                if live_p >= sl or c_high >= sl:
+                    exit_reason = "TRAILED BREAKEVEN" if pos_info.get("trailed") else "STOP-LOSS HIT"
+                    exit_p = sl
+                    raw_move = (ep - exit_p) / ep
+                elif live_p <= tp or c_low <= tp:
+                    exit_reason, exit_p, raw_move = "TARGET HIT", tp, (ep - tp) / ep
+
+            if exit_reason:
+                gross_roi = raw_move * leverage
+                pnl_inr = (margin_per_trade
