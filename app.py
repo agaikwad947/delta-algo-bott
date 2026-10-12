@@ -7,11 +7,11 @@ import os
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Delta India ₹20k Algo Bot", layout="wide")
+st.set_page_config(page_title="Delta India 20k Algo Bot", layout="wide")
 
 IST = timezone(timedelta(hours=5, minutes=30))
 STATE_FILE = "paper_state_inr.json"
-USDT_INR_RATE = 86.5  # Approximate 1 USDT in INR
+USDT_INR_RATE = 86.5
 
 # --- 1. PERSISTENT CLOUD MEMORY ---
 def load_state():
@@ -22,13 +22,13 @@ def load_state():
         except Exception:
             pass
     return {
-        "balance_inr": 20000.0,       # ₹20,000 Starting Capital
-        "position": None,             # None, "LONG (CE)", or "SHORT (PE)"
+        "balance_inr": 20000.0,
+        "position": None,
         "entry_price": 0.0,
         "tp_price": 0.0,
         "sl_price": 0.0,
         "entry_time": "",
-        "trade_margin_inr": 5000.0,   # Exactly ₹5,000 per trade (25% margin)
+        "trade_margin_inr": 5000.0,
         "lots": 0,
         "last_processed_ts": 0,
         "trade_log": []
@@ -41,23 +41,23 @@ def save_state(state):
 state = load_state()
 
 # --- 2. SIDEBAR PARAMETERS ---
-st.sidebar.header("⚙️ Bot Controls (Delta India)")
+st.sidebar.header("Bot Controls (Delta India)")
 symbol = st.sidebar.selectbox("Delta India Contract", ["BTCUSD", "ETHUSD", "SOLUSD"], index=0)
 timeframe = st.sidebar.selectbox("Candle Timeframe", ["5m", "15m"], index=1)
 leverage = st.sidebar.slider("Leverage (x)", 5, 50, 20)
 vol_mult = st.sidebar.slider("Volume Spike Filter (x Avg)", 1.0, 2.5, 1.3, 0.1)
 tp_raw = st.sidebar.number_input("Target Move % (+44% ROI at 20x)", value=2.2, step=0.1) / 100
 sl_raw = st.sidebar.number_input("Stop Loss Move % (-14% ROI at 20x)", value=0.7, step=0.1) / 100
-margin_inr_fixed = 5000.0  # Fixed ₹5,000 margin allocation per trade
-fee_rate = 0.0005          # Delta Exchange 0.05% taker fee
+margin_inr_fixed = 5000.0
+fee_rate = 0.0005
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🧪 Manual Instant Test")
+st.sidebar.subheader("Manual Instant Test")
 c_b1, c_b2 = st.sidebar.columns(2)
 force_long = c_b1.button("Force LONG")
 force_short = c_b2.button("Force SHORT")
 force_close = st.sidebar.button("Exit Active Trade")
-reset_bot = st.sidebar.button("🔄 Reset to ₹20,000")
+reset_bot = st.sidebar.button("Reset to Rs 20,000")
 
 if reset_bot and os.path.exists(STATE_FILE):
     os.remove(STATE_FILE)
@@ -87,7 +87,6 @@ now_ist = datetime.now(IST).strftime("%d %b %H:%M:%S IST")
 if state["last_processed_ts"] == 0:
     state["last_processed_ts"] = int(df["time"].iloc[50])
 
-# Helper function to calculate contracts without inline syntax errors
 def calculate_lots(sym, px):
     notional_usd = (margin_inr_fixed * leverage) / USDT_INR_RATE
     if sym == "BTCUSD":
@@ -136,29 +135,29 @@ for i in range(51, len(df) - 1):
 
         if pos == "LONG (CE)":
             if c_low <= sl:
-                exit_reason, exit_p, raw_move = "STOP-LOSS HIT 🛑", sl, -sl_raw
+                exit_reason, exit_p, raw_move = "STOP-LOSS HIT", sl, -sl_raw
             elif c_high >= tp:
-                exit_reason, exit_p, raw_move = "TARGET HIT 🎯", tp, tp_raw
+                exit_reason, exit_p, raw_move = "TARGET HIT", tp, tp_raw
         else:
             if c_high >= sl:
-                exit_reason, exit_p, raw_move = "STOP-LOSS HIT 🛑", sl, -sl_raw
+                exit_reason, exit_p, raw_move = "STOP-LOSS HIT", sl, -sl_raw
             elif c_low <= tp:
-                exit_reason, exit_p, raw_move = "TARGET HIT 🎯", tp, tp_raw
+                exit_reason, exit_p, raw_move = "TARGET HIT", tp, tp_raw
 
         if exit_reason:
             net_roi = (raw_move - (2 * fee_rate)) * leverage
-            pnl_inr = margin_inr_fixed * net_roi - 118.0  # Net of fees & GST
+            pnl_inr = margin_inr_fixed * net_roi - 118.0
             state["balance_inr"] += pnl_inr
             state["trade_log"].insert(0, {
                 "Entry Time": state["entry_time"],
                 "Exit Time": c_time_str,
                 "Contract": symbol,
                 "Position": f"{pos} {leverage}x",
-                "Margin Used": f"₹{margin_inr_fixed:,.0f}",
-                "Entry Price": f"${ep:,.2f}",
-                "Exit Price": f"${exit_p:,.2f}",
+                "Margin Used": f"Rs {margin_inr_fixed:,.0f}",
+                "Entry Price": f"{ep:,.2f} USD",
+                "Exit Price": f"{exit_p:,.2f} USD",
                 "ROI on Margin": f"{net_roi*100:+.2f}%",
-                "Net Profit (INR)": f"₹{pnl_inr:+,.0f}",
+                "Net Profit (INR)": f"Rs {pnl_inr:+,.0f}",
                 "Status": exit_reason
             })
             state["position"] = None
@@ -193,25 +192,25 @@ elif force_close:
         "Exit Time": now_ist,
         "Contract": symbol,
         "Position": f"{pos} {leverage}x",
-        "Margin Used": f"₹{margin_inr_fixed:,.0f}",
-        "Entry Price": f"${ep:,.2f}",
-        "Exit Price": f"${live_price:,.2f}",
+        "Margin Used": f"Rs {margin_inr_fixed:,.0f}",
+        "Entry Price": f"{ep:,.2f} USD",
+        "Exit Price": f"{live_price:,.2f} USD",
         "ROI on Margin": f"{net_roi*100:+.2f}%",
-        "Net Profit (INR)": f"₹{pnl_inr:+,.0f}",
-        "Status": "MANUAL EXIT ⚡"
+        "Net Profit (INR)": f"Rs {pnl_inr:+,.0f}",
+        "Status": "MANUAL EXIT"
     })
     state["position"] = None
 
 save_state(state)
 
 # --- 5. RENDER THE INR LIVE DASHBOARD ---
-st.title(f"⚡ Delta Exchange India — 20x Automated Paper Terminal")
-st.caption(f"24/7 Cloud Engine | Starting Base: **₹20,000** | Trade Margin: **₹5,000 (20x)** | Last Sync: `{now_ist}`")
+st.title("Delta Exchange India - 20x Automated Paper Terminal")
+st.caption(f"24/7 Cloud Engine | Starting Base: Rs 20,000 | Trade Margin: Rs 5,000 (20x) | Last Sync: {now_ist}")
 
 m1, m2, m3, m4 = st.columns(4)
 total_pnl = state["balance_inr"] - 20000.0
-m1.metric("Account Balance", f"₹{state['balance_inr']:,.0f}", f"{total_pnl:+,.0f} ₹")
-m2.metric(f"Live {symbol} Price", f"${live_price:,.2f}", f"Vol Ratio: {df['volume'].iloc[-2]/df['Vol_Avg'].iloc[-2]:.2f}x")
+m1.metric("Account Balance", f"Rs {state['balance_inr']:,.0f}", f"{total_pnl:+,.0f} INR")
+m2.metric(f"Live {symbol} Price", f"{live_price:,.2f} USD", f"Vol Ratio: {df['volume'].iloc[-2]/df['Vol_Avg'].iloc[-2]:.2f}x")
 
 if state["position"]:
     ep = state["entry_price"]
@@ -227,7 +226,11 @@ wr = (wins / tot_trades * 100) if tot_trades > 0 else 0.0
 m4.metric("Completed Trades", f"{tot_trades}", f"Win Rate: {wr:.1f}%")
 
 if state["position"]:
-    st.info(f"🔥 **OPEN {state['position']} (20x)** | **Margin:** ₹5,000 | **Entry:** ${state['entry_price']:,.2f} | **Target (+44%):** ${state['tp_price']:,.2f} \vert{} **Stop-Loss (-14\%):**${state['sl_price']:,.2f}")
+    pos_txt = state["position"]
+    ep_txt = f"{state['entry_price']:,.2f}"
+    tp_txt = f"{state['tp_price']:,.2f}"
+    sl_txt = f"{state['sl_price']:,.2f}"
+    st.info(f"OPEN {pos_txt} (20x) --- Margin: Rs 5,000 --- Entry: {ep_txt} USD --- Target (+44%): {tp_txt} USD --- Stop-Loss (-14%): {sl_txt} USD")
 
 fig = go.Figure()
 plot_df = df.tail(80)
@@ -244,11 +247,11 @@ if state["position"]:
 fig.update_layout(height=450, xaxis_rangeslider_visible=False, template="plotly_dark", margin=dict(l=10, r=10, t=25, b=10))
 st.plotly_chart(fig, use_container_width=True)
 
-st.subheader("📋 Trade Ledger (Rupees Net PnL)")
+st.subheader("Trade Ledger (Rupees Net PnL)")
 if state["trade_log"]:
     st.dataframe(pd.DataFrame(state["trade_log"]), use_container_width=True)
 else:
-    st.info("No breakouts triggered in the last 24h. You can click 'Force LONG' or 'Force SHORT' in the sidebar to simulate an instant trade!")
+    st.info("No breakouts triggered in the last 24h. Click Force LONG or Force SHORT in the left sidebar to test an instant live trade!")
 
 time.sleep(20)
 st.rerun()
