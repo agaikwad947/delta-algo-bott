@@ -13,7 +13,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 STATE_FILE = "paper_state_inr.json"
 USDT_INR_RATE = 86.5  # Approximate 1 USDT in INR
 
-# --- 1. PERSISTENT CLOUD MEMORY (Survives Laptop Shutting Down) ---
+# --- 1. PERSISTENT CLOUD MEMORY ---
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -22,7 +22,7 @@ def load_state():
         except Exception:
             pass
     return {
-        "balance_inr": 20000.0,       # Your ₹20,000 Starting Capital
+        "balance_inr": 20000.0,       # ₹20,000 Starting Capital
         "position": None,             # None, "LONG (CE)", or "SHORT (PE)"
         "entry_price": 0.0,
         "tp_price": 0.0,
@@ -87,7 +87,14 @@ now_ist = datetime.now(IST).strftime("%d %b %H:%M:%S IST")
 if state["last_processed_ts"] == 0:
     state["last_processed_ts"] = int(df["time"].iloc[50])
 
-# --- 4. 24/7 GAPLESS ENGINE (REPLAYS CANDLES MISSED WHILE ASLEEP) ---
+# Helper function to calculate contracts without inline syntax errors
+def calculate_lots(sym, px):
+    notional_usd = (margin_inr_fixed * leverage) / USDT_INR_RATE
+    if sym == "BTCUSD":
+        return max(1, int(notional_usd / (px * 0.001)))
+    return 10
+
+# --- 4. 24/7 GAPLESS ENGINE ---
 for i in range(51, len(df) - 1):
     candle = df.iloc[i]
     c_ts = int(candle["time"])
@@ -111,17 +118,14 @@ for i in range(51, len(df) - 1):
             state["tp_price"] = c_close * (1 + tp_raw)
             state["sl_price"] = c_close * (1 - sl_raw)
             state["entry_time"] = c_time_str
-            # Calculate Delta India contract lots for ₹1,00,000 notional (₹5,000 margin x 20)
-            notional_usd = (margin_inr_fixed * leverage) / USDT_INR_RATE
-            state["lots"] = max(1, int(notional_usd / (c_close * 0.001))) if sym := "BTCUSD" else 10
+            state["lots"] = calculate_lots(symbol, c_close)
         elif c_close < c_lower and c_close < c_ema50 and c_vol > (c_vavg * vol_mult):
             state["position"] = "SHORT (PE)"
             state["entry_price"] = c_close
             state["tp_price"] = c_close * (1 - tp_raw)
             state["sl_price"] = c_close * (1 + sl_raw)
             state["entry_time"] = c_time_str
-            notional_usd = (margin_inr_fixed * leverage) / USDT_INR_RATE
-            state["lots"] = max(1, int(notional_usd / (c_close * 0.001))) if sym := "BTCUSD" else 10
+            state["lots"] = calculate_lots(symbol, c_close)
     else:
         pos = state["position"]
         ep  = state["entry_price"]
@@ -143,7 +147,7 @@ for i in range(51, len(df) - 1):
 
         if exit_reason:
             net_roi = (raw_move - (2 * fee_rate)) * leverage
-            pnl_inr = margin_inr_fixed * net_roi - 118.0  # Net of exchange fees & GST
+            pnl_inr = margin_inr_fixed * net_roi - 118.0  # Net of fees & GST
             state["balance_inr"] += pnl_inr
             state["trade_log"].insert(0, {
                 "Entry Time": state["entry_time"],
